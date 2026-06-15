@@ -155,8 +155,22 @@ def run_training():
     dataset = Dataset.from_dict({"text": formatted_texts})
     log_msg(f"Dataset loaded: {len(dataset)} examples")
 
-    log_msg("Starting SFTTrainer...")
-    training_args = SFTConfig(
+    # Tokenize for Trainer (causal LM needs input_ids + labels)
+    log_msg("Tokenizing dataset...")
+    def tokenize_fn(examples):
+        outputs = tokenizer(
+            examples["text"],
+            truncation=True,
+            max_length=MAX_SEQ_LENGTH,
+            padding="max_length",
+        )
+        outputs["labels"] = outputs["input_ids"].copy()
+        return outputs
+    dataset = dataset.map(tokenize_fn, batched=True, remove_columns=["text"])
+
+    log_msg("Initializing Trainer...")
+    from transformers import Trainer, TrainingArguments, DataCollatorForLanguageModeling
+    training_args = TrainingArguments(
         output_dir=OUTPUT_DIR,
         num_train_epochs=EPOCHS,
         per_device_train_batch_size=BATCH_SIZE,
@@ -175,16 +189,15 @@ def run_training():
         report_to="none",
         remove_unused_columns=False,
         dataloader_num_workers=0,
-        dataset_text_field="text",
-        max_length=MAX_SEQ_LENGTH,
-        eos_token="<|eot_id|>",  # Llama 3.2 end-of-turn token
     )
 
-    trainer = SFTTrainer(
+    data_collator = DataCollatorForLanguageModeling(tokenizer=tokenizer, mlm=False)
+
+    trainer = Trainer(
         model=model,
-        processing_class=tokenizer,
-        train_dataset=dataset,
         args=training_args,
+        train_dataset=dataset,
+        data_collator=data_collator,
         callbacks=[UILogCallback()],
     )
 

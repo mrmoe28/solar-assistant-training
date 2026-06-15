@@ -1,0 +1,13 @@
+{
+  "model_name": "unsloth/Llama-3.2-3B-Instruct-unsloth-bnb-4bit",
+  "lora_r": 16,
+  "lora_alpha": 32,
+  "lora_dropout": 0.05,
+  "epochs": 3,
+  "batch_size": 1,
+  "gradient_accumulation": 4,
+  "learning_rate": 0.0002,
+  "max_seq_length": 2048,
+  "dataset_size": 13,
+  "trained_at": "2026-06-15T00:59:26.817951"
+}
