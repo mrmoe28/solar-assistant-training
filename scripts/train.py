@@ -1,9 +1,5 @@
 #!/usr/bin/env python3
-"""
-Solar Business Assistant Training Script
-Trains Llama-3.2-3B-Instruct with Unsloth QLoRA on solar business tasks.
-Includes live Gradio dashboard for monitoring.
-"""
+"""Solar Business Assistant Training - Llama 3.2 3B with Unsloth QLoRA."""
 
 import os
 import sys
@@ -13,15 +9,14 @@ import threading
 from datetime import datetime
 
 import torch
-from datasets import load_dataset
-from transformers import TrainingArguments, TrainerCallback
-from trl import SFTTrainer
+from datasets import load_dataset, Dataset
+from trl import SFTTrainer, SFTConfig
+from transformers import TrainerCallback
 
-# Import Unsloth FIRST as required
 import unsloth
 from unsloth import FastLanguageModel
 
-# Global vars for UI monitoring
+# Globals
 training_logs = []
 current_stats = {
     "status": "Idle",
@@ -35,19 +30,17 @@ current_stats = {
 training_thread = None
 stop_training = False
 
-# ============ CONFIG ============
+# Config
 MODEL_NAME = "unsloth/Llama-3.2-3B-Instruct-unsloth-bnb-4bit"
 DATASET_PATH = "data/solar_training_data.jsonl"
 OUTPUT_DIR = "models/solar-assistant-lora"
 MAX_SEQ_LENGTH = 2048
 
-# LoRA config
 LORA_R = 16
 LORA_ALPHA = 32
 LORA_DROPOUT = 0.05
 TARGET_MODULES = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
 
-# Training config
 EPOCHS = 3
 BATCH_SIZE = 1
 GRAD_ACCUM = 4
@@ -56,12 +49,8 @@ WARMUP_STEPS = 10
 SAVE_STEPS = 50
 LOG_STEPS = 5
 
-# ==================================
-
 
 class UILogCallback(TrainerCallback):
-    """Logs training progress to global vars for Gradio UI."""
-
     def __init__(self):
         self.start_time = time.time()
 
@@ -83,15 +72,11 @@ class UILogCallback(TrainerCallback):
             current_stats["loss"] = round(logs["loss"], 4)
         if "learning_rate" in logs:
             current_stats["learning_rate"] = round(logs["learning_rate"], 8)
-
-        # GPU memory
         if torch.cuda.is_available():
             mem_mb = torch.cuda.memory_allocated() / 1024 / 1024
             current_stats["gpu_memory_mb"] = round(mem_mb, 1)
-
         elapsed = time.time() - self.start_time
         current_stats["time_elapsed"] = format_time(elapsed)
-
         log_str = json.dumps(logs, indent=None)
         log_msg(f"[STEP {state.global_step}] {log_str}")
 
@@ -101,7 +86,7 @@ class UILogCallback(TrainerCallback):
         log_msg("[DONE] Training finished")
 
     def on_save(self, args, state, control, **kwargs):
-        log_msg(f"[SAVE] Checkpoint saved at step {state.global_step}")
+        log_msg(f"[SAVE] Checkpoint at step {state.global_step}")
 
 
 def format_time(seconds):
@@ -120,34 +105,14 @@ def log_msg(msg):
     print(entry)
 
 
-
-# Chat template constants for Llama 3.2
+# Chat template for Llama 3.2
 USER_START = "<|start_header_id|>user<|end_header_id|>"
 ASSISTANT_START = "<|start_header_id|>assistant<|end_header_id|>"
-EOT_TOKEN = "<|eot_id|>"
+EOT_TOKEN="<|eot_id|>"
 NEWLINE = chr(10)
 
 
-def format_dataset(examples):
-    """Convert instruction format to Llama 3.2 chat format."""
-    texts = []
-    for i in range(len(examples["instruction"])):
-        instruction = examples["instruction"][i]
-        input_text = examples.get("input", [""])[i] if "input" in examples else ""
-        output = examples["output"][i]
-        if input_text and input_text.strip():
-            user_msg = instruction + NEWLINE + NEWLINE + "Input:" + NEWLINE + input_text
-        else:
-            user_msg = instruction
-        text = USER_START + NEWLINE + NEWLINE + user_msg + EOT_TOKEN + NEWLINE
-        text += ASSISTANT_START + NEWLINE + NEWLINE + output + EOT_TOKEN + NEWLINE
-        texts.append(text)
-    return {"text": texts}
-
-
-
 def run_training():
-    """Main training loop - runs in background thread."""
     global stop_training
 
     log_msg("Loading model with Unsloth...")
@@ -171,12 +136,27 @@ def run_training():
     )
 
     log_msg("Loading dataset...")
-    dataset = load_dataset("json", data_files=DATASET_PATH, split="train")
-    dataset = dataset.map(format_dataset, batched=True)
+    raw_data = load_dataset("json", data_files=DATASET_PATH, split="train")
+    formatted_texts = []
+    for i in range(len(raw_data)):
+        instruction = raw_data["instruction"][i]
+        input_text = raw_data["input"][i] if "input" in raw_data.column_names else ""
+        output = raw_data["output"][i]
+        if input_text and input_text.strip():
+            user_msg = f"{instruction}\n\nInput:\n{input_text}"
+        else:
+            user_msg = instruction
+        text = (
+            USER_START + NEWLINE + NEWLINE + user_msg + EOT_TOKEN + NEWLINE
+            + ASSISTANT_START + NEWLINE + NEWLINE + output + EOT_TOKEN + NEWLINE
+        )
+        formatted_texts.append(text)
+
+    dataset = Dataset.from_dict({"text": formatted_texts})
     log_msg(f"Dataset loaded: {len(dataset)} examples")
 
-    # Training args
-    training_args = TrainingArguments(
+    log_msg("Starting SFTTrainer...")
+    training_args = SFTConfig(
         output_dir=OUTPUT_DIR,
         num_train_epochs=EPOCHS,
         per_device_train_batch_size=BATCH_SIZE,
@@ -195,27 +175,25 @@ def run_training():
         report_to="none",
         remove_unused_columns=False,
         dataloader_num_workers=0,
+        dataset_text_field="text",
+        max_length=MAX_SEQ_LENGTH,
+        eos_token="<|eot_id|>",  # Llama 3.2 end-of-turn token
     )
 
-    log_msg("Starting SFTTrainer...")
     trainer = SFTTrainer(
         model=model,
-        tokenizer=tokenizer,
+        processing_class=tokenizer,
         train_dataset=dataset,
-        dataset_text_field="text",
-        max_seq_length=MAX_SEQ_LENGTH,
         args=training_args,
         callbacks=[UILogCallback()],
     )
 
     trainer.train()
 
-    # Save final adapter
     log_msg("Saving LoRA adapter...")
     model.save_pretrained(OUTPUT_DIR)
     tokenizer.save_pretrained(OUTPUT_DIR)
 
-    # Save training config
     config_path = os.path.join(OUTPUT_DIR, "training_config.json")
     with open(config_path, "w") as f:
         json.dump({
@@ -234,8 +212,6 @@ def run_training():
 
     log_msg(f"[OK] Training complete. Adapter saved to: {OUTPUT_DIR}")
 
-
-# ============ GRADIO UI ============
 
 def build_ui():
     import gradio as gr
@@ -257,12 +233,9 @@ def build_ui():
         return json.dumps(current_stats, indent=2)
 
     def test_model_fn(instruction, input_text):
-        """Quick test of the trained model."""
         import gc
-
         if not os.path.exists(OUTPUT_DIR + "/adapter_config.json"):
             return "Model not trained yet. Train first!"
-
         try:
             model, tokenizer = FastLanguageModel.from_pretrained(
                 model_name=MODEL_NAME,
@@ -271,17 +244,14 @@ def build_ui():
                 load_in_4bit=True,
             )
             FastLanguageModel.for_inference(model)
-
             if input_text.strip():
                 user_msg = f"{instruction}\n\nInput:\n{input_text}"
             else:
                 user_msg = instruction
-
             messages = [{"role": "user", "content": user_msg}]
             text = tokenizer.apply_chat_template(
                 messages, tokenize=False, add_generation_prompt=True
             )
-
             inputs = tokenizer(text, return_tensors="pt").to("cuda")
             outputs = model.generate(
                 **inputs,
@@ -292,7 +262,6 @@ def build_ui():
             response = tokenizer.decode(outputs[0], skip_special_tokens=True)
             if user_msg in response:
                 response = response.split(user_msg)[-1].strip()
-
             del model
             gc.collect()
             torch.cuda.empty_cache()
@@ -302,8 +271,7 @@ def build_ui():
 
     with gr.Blocks(title="Solar Assistant Training") as demo:
         gr.Markdown("# [JOB] Solar Business Assistant - Model Training")
-        gr.Markdown("Train a local LLM to handle CRM, quotes, invoices, and scheduling for your solar business.")
-
+        gr.Markdown("Train a local LLM for CRM, quotes, invoices, and scheduling.")
         with gr.Row():
             with gr.Column(scale=1):
                 gr.Markdown("## [1] Configuration")
@@ -311,14 +279,11 @@ def build_ui():
                 gr.Markdown(f"**LoRA Rank:** `{LORA_R}` | **Alpha:** `{LORA_ALPHA}`")
                 gr.Markdown(f"**Epochs:** `{EPOCHS}` | **LR:** `{LEARNING_RATE}`")
                 gr.Markdown(f"**Max Length:** `{MAX_SEQ_LENGTH}` tokens")
-
                 start_btn = gr.Button("[START] Begin Training", variant="primary")
                 status_text = gr.Textbox(label="Status", value="Idle", interactive=False)
                 refresh_btn = gr.Button("[REFRESH] Update Stats")
-
                 gr.Markdown("## [2] Live Stats")
                 stats_box = gr.JSON(label="Training Stats", value=current_stats)
-
             with gr.Column(scale=2):
                 gr.Markdown("## [3] Training Logs")
                 logs_box = gr.Textbox(
@@ -327,7 +292,6 @@ def build_ui():
                     value="Click [START] to begin training...",
                     interactive=False,
                 )
-
         with gr.Row():
             with gr.Column():
                 gr.Markdown("## [4] Test Your Model")
@@ -339,7 +303,7 @@ def build_ui():
                 )
                 test_input = gr.Textbox(
                     label="Input Context",
-                    value="Name: Tom Anderson, Phone: 404-555-0147, Interested in 12kW system with 2 batteries",
+                    value="Name: Tom Anderson, Phone: 404-555-0147",
                     lines=3,
                 )
                 test_btn = gr.Button("[TEST] Generate Response")
@@ -361,7 +325,6 @@ if __name__ == "__main__":
     print(f"Output: {OUTPUT_DIR}")
     print(f"GPU: {torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU'}")
     print("-" * 60)
-
     if len(sys.argv) > 1 and sys.argv[1] == "--train":
         print("Running in CLI training mode...")
         run_training()
