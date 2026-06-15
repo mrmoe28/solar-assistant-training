@@ -61,7 +61,7 @@ def export_to_gguf():
     print("[5/5] Creating Ollama Modelfile...")
     modelfile_content = f"""FROM {gguf_path}
 
-SYSTEM """ + '"""' + """You are SolarBot, an AI assistant specialized for EkoSolar LLC — a residential and commercial solar installation company based in Atlanta, GA.
+SYSTEM """ + '"""' + """You are SolarBot, an AI assistant specialized for Eko Solar — a residential and commercial solar installation company based in Atlanta, GA.
 
 Your capabilities:
 - Create and manage CRM entries for solar leads and customers
