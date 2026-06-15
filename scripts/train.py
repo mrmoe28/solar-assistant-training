@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Solar Business Assistant Training Script
-Trains Qwen2.5-7B-Instruct with Unsloth QLoRA on solar business tasks.
+Trains Llama-3.2-3B-Instruct with Unsloth QLoRA on solar business tasks.
 Includes live Gradio dashboard for monitoring.
 """
 
@@ -17,9 +17,9 @@ from datasets import load_dataset
 from transformers import TrainingArguments, TrainerCallback
 from trl import SFTTrainer
 
-# Import Unsloth
+# Import Unsloth FIRST as required
+import unsloth
 from unsloth import FastLanguageModel
-from unsloth.chat_templates import get_chat_template
 
 # Global vars for UI monitoring
 training_logs = []
@@ -36,7 +36,7 @@ training_thread = None
 stop_training = False
 
 # ============ CONFIG ============
-MODEL_NAME = "unsloth/Qwen2.5-7B-Instruct-unsloth-bnb-4bit"
+MODEL_NAME = "unsloth/Llama-3.2-3B-Instruct-unsloth-bnb-4bit"
 DATASET_PATH = "data/solar_training_data.jsonl"
 OUTPUT_DIR = "models/solar-assistant-lora"
 MAX_SEQ_LENGTH = 2048
@@ -115,40 +115,46 @@ def log_msg(msg):
     ts = datetime.now().strftime("%H:%M:%S")
     entry = f"[{ts}] {msg}"
     training_logs.append(entry)
-    # Keep last 200 entries
     while len(training_logs) > 200:
         training_logs.pop(0)
     print(entry)
 
 
+
+# Chat template constants for Llama 3.2
+USER_START = "<|start_header_id|>user<|end_header_id|>"
+ASSISTANT_START = "<|start_header_id|>assistant<|end_header_id|>"
+EOT_TOKEN = "<|eot_id|>"
+NEWLINE = chr(10)
+
+
 def format_dataset(examples):
-    """Convert instruction format to chat format."""
+    """Convert instruction format to Llama 3.2 chat format."""
     texts = []
     for i in range(len(examples["instruction"])):
         instruction = examples["instruction"][i]
         input_text = examples.get("input", [""])[i] if "input" in examples else ""
         output = examples["output"][i]
-
         if input_text and input_text.strip():
-            user_msg = f"{instruction}\n\nInput:\n{input_text}"
+            user_msg = instruction + NEWLINE + NEWLINE + "Input:" + NEWLINE + input_text
         else:
             user_msg = instruction
-
-        # Qwen2.5 chat format
-        text = f"<|im_start|>user\n{user_msg}<|im_end|>\n<|im_start|>assistant\n{output}<|im_end|>\n"
+        text = USER_START + NEWLINE + NEWLINE + user_msg + EOT_TOKEN + NEWLINE
+        text += ASSISTANT_START + NEWLINE + NEWLINE + output + EOT_TOKEN + NEWLINE
         texts.append(text)
     return {"text": texts}
 
 
+
 def run_training():
-    """Main training loop — runs in background thread."""
+    """Main training loop - runs in background thread."""
     global stop_training
 
     log_msg("Loading model with Unsloth...")
     model, tokenizer = FastLanguageModel.from_pretrained(
         model_name=MODEL_NAME,
         max_seq_length=MAX_SEQ_LENGTH,
-        dtype=None,  # Auto-detect
+        dtype=None,
         load_in_4bit=True,
     )
 
@@ -186,7 +192,7 @@ def run_training():
         weight_decay=0.01,
         lr_scheduler_type="cosine",
         seed=3407,
-        report_to="none",  # No wandb/hf
+        report_to="none",
         remove_unused_columns=False,
         dataloader_num_workers=0,
     )
@@ -252,7 +258,6 @@ def build_ui():
 
     def test_model_fn(instruction, input_text):
         """Quick test of the trained model."""
-        from unsloth import FastLanguageModel
         import gc
 
         if not os.path.exists(OUTPUT_DIR + "/adapter_config.json"):
@@ -285,7 +290,6 @@ def build_ui():
                 top_p=0.9,
             )
             response = tokenizer.decode(outputs[0], skip_special_tokens=True)
-            # Remove the prompt part
             if user_msg in response:
                 response = response.split(user_msg)[-1].strip()
 
@@ -296,7 +300,7 @@ def build_ui():
         except Exception as e:
             return f"Error: {str(e)}"
 
-    with gr.Blocks(title="Solar Assistant Training", theme=gr.themes.Soft()) as demo:
+    with gr.Blocks(title="Solar Assistant Training") as demo:
         gr.Markdown("# [JOB] Solar Business Assistant - Model Training")
         gr.Markdown("Train a local LLM to handle CRM, quotes, invoices, and scheduling for your solar business.")
 
@@ -310,6 +314,7 @@ def build_ui():
 
                 start_btn = gr.Button("[START] Begin Training", variant="primary")
                 status_text = gr.Textbox(label="Status", value="Idle", interactive=False)
+                refresh_btn = gr.Button("[REFRESH] Update Stats")
 
                 gr.Markdown("## [2] Live Stats")
                 stats_box = gr.JSON(label="Training Stats", value=current_stats)
@@ -340,11 +345,9 @@ def build_ui():
                 test_btn = gr.Button("[TEST] Generate Response")
                 test_output = gr.Textbox(label="Model Output", lines=10, interactive=False)
 
-        # Auto-refresh logs and stats every 3 seconds
-        demo.load(get_logs, outputs=logs_box, every=3)
-        demo.load(get_stats, outputs=stats_box, every=3)
-
         start_btn.click(start_training_fn, outputs=status_text)
+        refresh_btn.click(get_logs, outputs=logs_box)
+        refresh_btn.click(get_stats, outputs=stats_box)
         test_btn.click(test_model_fn, inputs=[test_instruction, test_input], outputs=test_output)
 
     return demo
@@ -359,7 +362,6 @@ if __name__ == "__main__":
     print(f"GPU: {torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU'}")
     print("-" * 60)
 
-    # Also run training from CLI if --train flag
     if len(sys.argv) > 1 and sys.argv[1] == "--train":
         print("Running in CLI training mode...")
         run_training()

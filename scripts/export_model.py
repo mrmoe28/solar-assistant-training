@@ -20,7 +20,7 @@ def export_to_gguf():
 
     print(f"[1/5] Loading base model + adapter from: {ADAPTER_PATH}")
     model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name=MODEL_NAME,
+        model_name="unsloth/Llama-3.2-3B-Instruct-unsloth-bnb-4bit",
         adapter_name=ADAPTER_PATH,
         max_seq_length=2048,
         load_in_4bit=True,
