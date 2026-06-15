@@ -1,0 +1,16 @@
+venv/
+models/*/checkpoint-*/
+models/*/runs/
+models/*/__pycache__/
+logs/*.txt
+outputs/*.gguf
+outputs/*.bin
+*.pyc
+__pycache__/
+.DS_Store
+*.swp
+*.swo
+*.egg-info/
+dist/
+build/
+.cache/
